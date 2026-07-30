@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunk, planDeactivations } from "./store";
+import { chunk, dedupeByExternalId, planDeactivations, splitUpsertRows } from "./store";
 
 describe("planDeactivations", () => {
   it("returns ids of rows whose external_id is absent from the fetched set", () => {
@@ -33,5 +33,81 @@ describe("chunk", () => {
 
   it("returns an empty array for an empty input", () => {
     expect(chunk([], 500)).toEqual([]);
+  });
+});
+
+describe("dedupeByExternalId", () => {
+  it("keeps the last row seen for each external_id", () => {
+    const rows = [
+      { external_id: "1", title: "old" },
+      { external_id: "2", title: "keep" },
+      { external_id: "1", title: "new" },
+    ];
+    expect(dedupeByExternalId(rows)).toEqual([
+      { external_id: "1", title: "new" },
+      { external_id: "2", title: "keep" },
+    ]);
+  });
+
+  it("returns an empty array for empty input", () => {
+    expect(dedupeByExternalId([])).toEqual([]);
+  });
+});
+
+describe("splitUpsertRows", () => {
+  const base = {
+    ats: "smartrecruiters",
+    company_slug: "acme",
+    company_name: "Acme",
+    title: "Engineer",
+    city: "London",
+    country_code: "GB",
+    location_raw: "London",
+    remote_type: null,
+    employment_type: null,
+    salary_currency: null,
+    salary_raw: null,
+    posted_at: null,
+    sponsor_norm: "acme",
+    last_seen_at: "2026-07-30T00:00:00.000Z",
+    is_active: true,
+  };
+  const STRIPPED_KEYS = ["description_text", "salary_min", "salary_max", "salary_currency", "salary_raw", "apply_url"];
+
+  it("strips description_text, salary fields, and apply_url from touch rows only", () => {
+    const fullRow = {
+      ...base, external_id: "1", description_text: "A real description",
+      salary_min: 50000, salary_max: 60000, apply_url: "https://jobs.example.com/postings/1",
+    };
+    const touchRow = {
+      ...base, external_id: "2", description_text: "",
+      salary_min: null, salary_max: null, apply_url: "https://jobs.smartrecruiters.com/acme/2",
+    };
+
+    const { full, touch } = splitUpsertRows([fullRow, touchRow]);
+
+    expect(full).toEqual([fullRow]);
+    expect(touch).toHaveLength(1);
+    for (const key of STRIPPED_KEYS) expect(touch[0]).not.toHaveProperty(key);
+    expect(touch[0]).toMatchObject({ external_id: "2", ats: "smartrecruiters", company_slug: "acme" });
+  });
+
+  it("keeps each output batch internally uniform in its key set", () => {
+    const fullA = { ...base, external_id: "1", description_text: "x", salary_min: 1, salary_max: 2, apply_url: "u1" };
+    const fullB = { ...base, external_id: "2", description_text: "y", salary_min: 3, salary_max: 4, apply_url: "u2" };
+    const touchA = { ...base, external_id: "3", description_text: "", salary_min: 5, salary_max: 6, apply_url: "u3" };
+    const touchB = { ...base, external_id: "4", description_text: "", salary_min: 7, salary_max: 8, apply_url: "u4" };
+
+    const { full, touch } = splitUpsertRows([fullA, touchA, fullB, touchB]);
+
+    const keysOf = (r: Record<string, unknown>) => Object.keys(r).sort();
+    expect(full).toHaveLength(2);
+    expect(touch).toHaveLength(2);
+    expect(keysOf(full[0])).toEqual(keysOf(full[1]));
+    expect(keysOf(touch[0])).toEqual(keysOf(touch[1]));
+  });
+
+  it("returns empty arrays for empty input", () => {
+    expect(splitUpsertRows([])).toEqual({ full: [], touch: [] });
   });
 });
