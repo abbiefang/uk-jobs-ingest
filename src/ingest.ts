@@ -1,7 +1,7 @@
 import type { CompanyRow, Fetcher, FetchOutcome, JobRecord } from "./types";
 import { requireEnv, sb } from "./lib/supabase";
 import { rateLimiter } from "./lib/http";
-import { chunk, dedupeByExternalId, planDeactivations, splitUpsertRows } from "./lib/store";
+import { chunk, dedupeByExternalId, isSuccessfulPage, planDeactivations, splitUpsertRows } from "./lib/store";
 import { normalizeCompany } from "./lib/companies";
 import { fetchGreenhouse } from "./fetchers/greenhouse";
 import { fetchLever } from "./fetchers/lever";
@@ -34,11 +34,25 @@ type AtsStats = {
 
 const COMPANIES_PAGE_SIZE = 1000;
 
+/** Thrown by fetchCompanies() when a page can't be trusted (non-2xx or non-array body). Carries
+ *  only the HTTP status — never response detail — so the caller can log it without violating
+ *  log hygiene. */
+class DirectoryReadError extends Error {
+  constructor(public readonly status: number) {
+    super(`ingest_companies directory read failed (status ${status})`);
+  }
+}
+
 /** Unlike a single company's job list, the full ingest_companies directory can exceed
  *  PostgREST's default 1000-row response cap — paginate with Range headers until a short
  *  page confirms there's nothing left. Polls both 'active' and 'empty' companies (an empty
  *  board is a valid steady state that still needs to keep being checked; only 'dead' is
- *  excluded — that status transition is Task 7's job, not this one's). */
+ *  excluded — that status transition is Task 7's job, not this one's).
+ *
+ *  A non-2xx or non-array page is indistinguishable from a genuine short final page unless
+ *  treated as fatal — silently coercing it to [] would truncate the directory (and every
+ *  company past that page never gets ingested this run) while everything downstream still
+ *  reports green. So this throws instead of ever returning a partial list. */
 async function fetchCompanies(): Promise<CompanyRow[]> {
   const all: CompanyRow[] = [];
   let offset = 0;
@@ -47,7 +61,8 @@ async function fetchCompanies(): Promise<CompanyRow[]> {
       "ingest_companies?status=in.(active,empty)&select=slug,ats,company_name,careers_url,sponsor_matched,status,consecutive_failures",
       { headers: { Range: `${offset}-${offset + COMPANIES_PAGE_SIZE - 1}`, "Range-Unit": "items" } },
     );
-    const page = Array.isArray(res.body) ? (res.body as CompanyRow[]) : [];
+    if (!isSuccessfulPage(res.status, res.body)) throw new DirectoryReadError(res.status);
+    const page = res.body as CompanyRow[];
     all.push(...page);
     if (page.length < COMPANIES_PAGE_SIZE) break;
     offset += COMPANIES_PAGE_SIZE;
@@ -209,13 +224,31 @@ async function processAtsGroup(ats: string, companies: CompanyRow[]): Promise<At
     }),
   });
 
-  return { ats, companiesFetched, jobsUpserted, jobsDeactivated, failures, writeErrors, durationMs, ok };
+  // Recomputed after the run-log write: that write() call can itself bump writeErrors (a
+  // failed job_ingest_runs insert), which the persisted row above can't retroactively reflect
+  // — it already carries the pre-write `ok` computed a few lines up, and leaving that stale
+  // value there is acceptable (the row still records what was true when the insert ran). But
+  // the value RETURNED to main()'s exit-code gate must be the true final one, or a failed
+  // run-log write would silently pass the gate.
+  const finalOk = failures < companiesFetched && writeErrors === 0;
+
+  return { ats, companiesFetched, jobsUpserted, jobsDeactivated, failures, writeErrors, durationMs, ok: finalOk };
 }
 
 async function main() {
   requireEnv();
 
-  const companies = await fetchCompanies();
+  let companies: CompanyRow[];
+  try {
+    companies = await fetchCompanies();
+  } catch (err) {
+    // LOG HYGIENE: status only, no response body/detail. A failed directory read means we
+    // don't know the true company list, so no ATS group runs this call at all.
+    const status = err instanceof DirectoryReadError ? err.status : 0;
+    console.log(JSON.stringify({ error: "ingest_companies_directory_read_failed", status }));
+    process.exitCode = 1;
+    return;
+  }
 
   const byAts = new Map<string, CompanyRow[]>();
   for (const company of companies) {
@@ -245,12 +278,19 @@ async function main() {
 
   const totalUpserted = results.reduce((sum, r) => sum + r.jobsUpserted, 0);
   const allFailed = results.length > 0 && results.every((r) => !r.ok);
+  // fetchCompanies() now polls 'active' and 'empty' companies (F5), so companies.length is no
+  // longer "active companies" — recount just the active ones for the brief's exit-gate
+  // semantics ("total upserts === 0 while >0 active companies exist"), or a steady state of
+  // zero active + some empty companies would false-positive the run red.
+  const activeCompanies = companies.filter((c) => c.status === "active").length;
 
   // LOG HYGIENE: public Actions logs are world-readable — aggregate counts only, never a
   // company name, slug, or per-company error string.
-  console.log(JSON.stringify({ runs: results, totalUpserted, polledCompanies: companies.length }));
+  console.log(JSON.stringify({
+    runs: results, totalUpserted, polledCompanies: companies.length, activeCompanies,
+  }));
 
-  if (allFailed || (totalUpserted === 0 && companies.length > 0)) {
+  if (allFailed || (totalUpserted === 0 && activeCompanies > 0)) {
     process.exitCode = 1;
   }
 }

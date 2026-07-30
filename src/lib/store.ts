@@ -12,6 +12,14 @@ export function chunk<T>(arr: T[], n: number): T[][] {
   return out;
 }
 
+/** True when a paginated PostgREST response is trustworthy enough to treat as real data. Used
+ *  to tell a genuine end-of-table page (a short array on a 2xx) apart from a transient error
+ *  (5xx, malformed body) that would otherwise look identical to "no more rows" — callers should
+ *  fail loud (throw) rather than silently truncate on a false negative here. */
+export function isSuccessfulPage(status: number, body: unknown): body is unknown[] {
+  return status >= 200 && status < 300 && Array.isArray(body);
+}
+
 /** Last write wins per external_id — guards against a fetcher returning the same posting more
  *  than once in one run (e.g. SmartRecruiters' offset-based listing pages can overlap), which
  *  would otherwise make PostgREST's ON CONFLICT batch upsert reject the whole chunk (error

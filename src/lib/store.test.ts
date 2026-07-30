@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunk, dedupeByExternalId, planDeactivations, splitUpsertRows } from "./store";
+import { chunk, dedupeByExternalId, isSuccessfulPage, planDeactivations, splitUpsertRows } from "./store";
 
 describe("planDeactivations", () => {
   it("returns ids of rows whose external_id is absent from the fetched set", () => {
@@ -109,5 +109,24 @@ describe("splitUpsertRows", () => {
 
   it("returns empty arrays for empty input", () => {
     expect(splitUpsertRows([])).toEqual({ full: [], touch: [] });
+  });
+});
+
+describe("isSuccessfulPage", () => {
+  it("accepts a 200 with an array body", () => {
+    expect(isSuccessfulPage(200, [{ id: 1 }])).toBe(true);
+  });
+
+  it("accepts a 206 partial-content array body", () => {
+    expect(isSuccessfulPage(206, [])).toBe(true);
+  });
+
+  it("rejects a non-2xx status even with an array body", () => {
+    expect(isSuccessfulPage(500, [])).toBe(false);
+  });
+
+  it("rejects a 2xx status whose body is not an array", () => {
+    expect(isSuccessfulPage(200, { message: "not an array" })).toBe(false);
+    expect(isSuccessfulPage(200, null)).toBe(false);
   });
 });
