@@ -80,10 +80,10 @@ export const fetchSmartRecruiters: Fetcher = async (company, ctx) => {
   }
   // totalFound === 0 (including unknown slugs, which SmartRecruiters answers with 200) is a
   // valid empty result at ingest time — never mark gone from this fetch.
-  const ukListings = content.slice(0, HARD_CAP);
+  const listings = content.slice(0, HARD_CAP);
 
   const out: JobRecord[] = [];
-  for (const raw of ukListings) {
+  for (const raw of listings) {
     const base = normalizeSrListing(raw, company);
     if (!base) continue; // non-UK
     if (ctx.existingIds.has(base.external_id)) {
@@ -94,7 +94,10 @@ export const fetchSmartRecruiters: Fetcher = async (company, ctx) => {
       `https://api.smartrecruiters.com/v1/companies/${company.slug}/postings/${base.external_id}`,
     );
     if (detailR.status !== 200) {
-      out.push(base); // fall back to listing-only fields if the detail call fails
+      // Drop this first-seen job for this run rather than pushing description_text: "" — that
+      // empty string is the keep-stored-description sentinel, and a first-seen job has nothing
+      // stored yet. Because it's dropped, it's never upserted, so it stays absent from
+      // existingIds and the next scheduled run naturally retries the detail call.
       continue;
     }
     out.push(mergeSrDetail(base, detailR.body));
