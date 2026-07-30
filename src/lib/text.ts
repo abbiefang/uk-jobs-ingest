@@ -35,6 +35,14 @@ export function isUkLocation(locationRaw: string, countryCode?: string | null): 
 
 export function ukCityOf(locationRaw: string): string | null {
   const l = locationRaw.toLowerCase();
-  const hit = UK_CITIES.find((c) => l.includes(c));
-  return hit ? hit.replace(/\b\w/g, (m) => m.toUpperCase()) : null;
+  let earliestCity: string | null = null;
+  let earliestIndex = Infinity;
+  for (const c of UK_CITIES) {
+    const idx = l.indexOf(c);
+    if (idx >= 0 && idx < earliestIndex) {
+      earliestIndex = idx;
+      earliestCity = c;
+    }
+  }
+  return earliestCity ? earliestCity.replace(/\b\w/g, (m) => m.toUpperCase()) : null;
 }
