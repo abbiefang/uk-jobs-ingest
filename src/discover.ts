@@ -123,25 +123,28 @@ function deriveSlugFromUrl(url: string): string | null {
   }
 }
 
-/** Header is inspected at runtime — the upstream repo's CSV schema isn't ours to pin down. */
-function parseAtsCompaniesCsv(csvText: string): { name: string; ats: Ats; slug: string }[] {
+/** The upstream kalil0321/ats-scrapers directory has no `ats` column — every file's header is
+ *  `name,slug,url` (verified against the real repo during development: every file for our 7
+ *  supported providers is named exactly `<ats>.csv`, e.g. `smartrecruiters.csv`). The ATS is
+ *  identified by the FILENAME instead; rows are only produced for filenames that normalize to
+ *  one of our 7 supported providers. */
+export function parseDirectoryCsv(filename: string, csvText: string): { name: string; ats: Ats; slug: string }[] {
+  const ats = normalizeAts(filename.replace(/\.csv$/i, ""));
+  if (!ats) return [];
+
   const lines = csvText.split(/\r?\n/).filter((l) => l.length > 0);
   if (lines.length === 0) return [];
   const header = parseCsvLine(lines[0]);
   const nameIdx = findHeaderIndex(header, ["company", "company name", "name"]);
-  const atsIdx = findHeaderIndex(header, ["ats", "ats_name", "provider"]);
   const slugIdx = findHeaderIndex(header, ["slug", "board_slug", "company_slug"]);
   const urlIdx = findHeaderIndex(header, ["url", "careers_url", "board_url", "link"]);
-  if (nameIdx === -1 || atsIdx === -1) return [];
+  if (nameIdx === -1) return [];
 
   const rows: { name: string; ats: Ats; slug: string }[] = [];
   for (let i = 1; i < lines.length; i++) {
     const fields = parseCsvLine(lines[i]);
     const name = fields[nameIdx]?.trim();
-    const atsRaw = fields[atsIdx]?.trim();
-    if (!name || !atsRaw) continue;
-    const ats = normalizeAts(atsRaw);
-    if (!ats) continue;
+    if (!name) continue;
     let slug = (slugIdx !== -1 ? fields[slugIdx]?.trim() : "") ?? "";
     if (!slug && urlIdx !== -1) slug = deriveSlugFromUrl(fields[urlIdx]?.trim() ?? "") ?? "";
     slug = slug.toLowerCase();
@@ -201,14 +204,22 @@ async function upsertCompanies(rows: Record<string, unknown>[]): Promise<number>
 
 async function buildDirectorySeed(
   registerMap: Map<string, string>,
-): Promise<{ scanned: number; upserted: number; filesSkipped: number }> {
+): Promise<{ scanned: number; upserted: number; filesSkipped: number; filesUnsupportedAts: number }> {
   const files = await fetchAtsCompaniesDirectory();
   const alwaysInclude = await loadAlwaysIncludeKeys();
 
   let scanned = 0;
   let upserted = 0;
   let filesSkipped = 0;
+  let filesUnsupportedAts = 0;
   for (const file of files) {
+    // The directory has ~40 files but only 7 are providers this pipeline supports — skip on
+    // filename alone before spending a network call on the other ~30 (some are large).
+    if (!normalizeAts(file.name.replace(/\.csv$/i, ""))) {
+      filesUnsupportedAts++;
+      continue;
+    }
+
     // One bad file in the directory shouldn't kill the whole seed step — a non-ok status and a
     // thrown network/timeout error both just skip this file and move on to the next.
     let csvText: string;
@@ -223,7 +234,7 @@ async function buildDirectorySeed(
       filesSkipped++;
       continue;
     }
-    const rows = parseAtsCompaniesCsv(csvText);
+    const rows = parseDirectoryCsv(file.name, csvText);
     scanned += rows.length;
 
     const toUpsert: Record<string, unknown>[] = [];
@@ -242,7 +253,7 @@ async function buildDirectorySeed(
     }
     upserted += await upsertCompanies(toUpsert);
   }
-  return { scanned, upserted, filesSkipped };
+  return { scanned, upserted, filesSkipped, filesUnsupportedAts };
 }
 
 // ---------------------------------------------------------------------------
@@ -563,11 +574,13 @@ async function main() {
   let directoryScanned: number;
   let directoryUpserted: number;
   let directoryFilesSkipped: number;
+  let directoryFilesUnsupportedAts: number;
   try {
     const result = await buildDirectorySeed(registerMap);
     directoryScanned = result.scanned;
     directoryUpserted = result.upserted;
     directoryFilesSkipped = result.filesSkipped;
+    directoryFilesUnsupportedAts = result.filesUnsupportedAts;
   } catch (err) {
     const reason = err instanceof DirectoryFetchError ? err.reason : "unknown";
     console.log(JSON.stringify({ error: "directory_seed_failed", reason }));
@@ -601,6 +614,7 @@ async function main() {
     directoryCsvRowsScanned: directoryScanned,
     directoryHitsUpserted: directoryUpserted,
     directoryFilesSkipped,
+    directoryFilesUnsupportedAts,
     probesAttempted: probeStats.attempted,
     probeHits: probeStats.hits,
     deadsMarked: deadStats.marked,

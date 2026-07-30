@@ -1,5 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { selectProbeBatch } from "./discover";
+import { parseDirectoryCsv, selectProbeBatch } from "./discover";
+
+describe("parseDirectoryCsv", () => {
+  const CSV = [
+    "name,slug,url",
+    "0g Labs,0g,https://jobs.ashbyhq.com/0g",
+    "0x,0x,https://jobs.ashbyhq.com/0x",
+  ].join("\n");
+
+  it("derives ats from the filename, not from a CSV column (real upstream files have no ats column)", () => {
+    const rows = parseDirectoryCsv("ashby.csv", CSV);
+    expect(rows).toEqual([
+      { name: "0g Labs", ats: "ashby", slug: "0g" },
+      { name: "0x", ats: "ashby", slug: "0x" },
+    ]);
+  });
+
+  it("normalizes filenames with separators/case, e.g. a hypothetical Smart_Recruiters.CSV", () => {
+    const rows = parseDirectoryCsv("Smart_Recruiters.CSV", "name,slug,url\nAcme,acme,https://x");
+    expect(rows).toEqual([{ name: "Acme", ats: "smartrecruiters", slug: "acme" }]);
+  });
+
+  it("returns an empty array for a filename whose ats isn't one of the 7 supported providers", () => {
+    expect(parseDirectoryCsv("workday.csv", CSV)).toEqual([]);
+  });
+
+  it("derives slug from the url column when no slug column is present", () => {
+    const csv = ["name,url", "Acme Ltd,https://jobs.lever.co/acme"].join("\n");
+    expect(parseDirectoryCsv("lever.csv", csv)).toEqual([{ name: "Acme Ltd", ats: "lever", slug: "acme" }]);
+  });
+
+  it("skips rows with no name or no derivable slug", () => {
+    const csv = ["name,slug,url", ",noname,https://x", "No Slug,,not a url"].join("\n");
+    expect(parseDirectoryCsv("greenhouse.csv", csv)).toEqual([]);
+  });
+
+  it("returns an empty array for an empty CSV body", () => {
+    expect(parseDirectoryCsv("ashby.csv", "")).toEqual([]);
+  });
+});
 
 const REGISTER = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
 
