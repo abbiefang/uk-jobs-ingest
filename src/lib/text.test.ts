@@ -1,9 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { extractGbpRange, isUkLocation, stripHtml, ukCityOf } from "./text";
+import { extractGbpRange, isUkLocation, stripHtml, truncateText, ukCityOf } from "./text";
 
 describe("stripHtml", () => {
   it("unescapes Greenhouse double-escaped HTML then strips tags", () => {
     expect(stripHtml("&lt;div&gt;Senior &amp; Staff&lt;/div&gt;")).toBe("Senior & Staff");
+  });
+});
+
+describe("truncateText", () => {
+  it("returns the string unchanged when under the limit", () => {
+    expect(truncateText("hello", 10)).toBe("hello");
+  });
+
+  it("truncates a plain-ASCII string to exactly maxLen", () => {
+    expect(truncateText("a".repeat(20), 10)).toBe("a".repeat(10));
+  });
+
+  it("drops a trailing lone high surrogate instead of splitting an emoji's surrogate pair", () => {
+    // "a".repeat(9) + "🎉" ("🎉") is 11 UTF-16 code units; slicing to 10 naively
+    // would cut mid-pair and leave an unpaired high surrogate, which produces invalid UTF-8
+    // once JSON-serialized and sent over HTTP (this is exactly what broke a real production
+    // write: Postgres/PostgREST rejected the whole batch as "Empty or invalid json").
+    const s = "a".repeat(9) + "🎉";
+    expect(s.length).toBe(11);
+    const truncated = truncateText(s, 10);
+    expect(truncated).toBe("a".repeat(9));
+    expect(truncated.charCodeAt(truncated.length - 1)).not.toBeGreaterThanOrEqual(0xd800);
+  });
+
+  it("keeps a complete emoji when the cut falls exactly after its low surrogate", () => {
+    const s = "a".repeat(9) + "🎉"; // length 11
+    expect(truncateText(s, 11)).toBe(s);
   });
 });
 

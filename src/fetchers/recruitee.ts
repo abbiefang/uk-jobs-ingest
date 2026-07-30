@@ -1,6 +1,6 @@
 import type { CompanyRow, Fetcher, JobRecord } from "../types";
 import { fetchJson } from "../lib/http";
-import { isUkLocation, stripHtml, ukCityOf } from "../lib/text";
+import { isUkLocation, stripHtml, truncateText, ukCityOf } from "../lib/text";
 
 type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
@@ -17,7 +17,7 @@ export function normalizeRecruitee(raw: unknown, company: CompanyRow): JobRecord
   const locationRaw = str(j.location) || str(j.city);
   if (!isUkLocation(locationRaw, str(j.country_code) || null)) return null;
   const salary = rec(j.salary);
-  const description = stripHtml(`${str(j.description)} ${str(j.requirements)}`).slice(0, 5000);
+  const description = truncateText(stripHtml(`${str(j.description)} ${str(j.requirements)}`), 5000);
   return {
     ats: "recruitee",
     external_id: String(j.id ?? ""),

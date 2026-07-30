@@ -1,6 +1,6 @@
 import type { CompanyRow, Fetcher, JobRecord } from "../types";
 import { fetchJson } from "../lib/http";
-import { extractGbpRange, isUkLocation, stripHtml, ukCityOf } from "../lib/text";
+import { extractGbpRange, isUkLocation, stripHtml, truncateText, ukCityOf } from "../lib/text";
 
 type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
@@ -21,7 +21,7 @@ export function normalizeAshby(raw: unknown, company: CompanyRow): JobRecord | n
   // (e.g. "barcelona", "paris") would otherwise veto a genuinely UK secondary location just
   // because an unrelated non-UK office name also appears somewhere in the joined text.
   if (!allLocations.some((loc) => isUkLocation(loc))) return null;
-  const description = stripHtml(str(j.descriptionHtml)).slice(0, 5000);
+  const description = truncateText(stripHtml(str(j.descriptionHtml)), 5000);
   const compensation = rec(j.compensation);
   const compensationSummary = str(compensation.compensationTierSummary);
   let gbp = compensationSummary ? extractGbpRange(compensationSummary) : null;

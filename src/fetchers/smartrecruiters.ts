@@ -1,6 +1,6 @@
 import type { CompanyRow, Fetcher, JobRecord } from "../types";
 import { fetchJson } from "../lib/http";
-import { stripHtml } from "../lib/text";
+import { stripHtml, truncateText } from "../lib/text";
 
 type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
@@ -45,12 +45,15 @@ export function normalizeSrListing(raw: unknown, company: CompanyRow): JobRecord
 export function mergeSrDetail(record: JobRecord, detailRaw: unknown): JobRecord {
   const d = rec(detailRaw);
   const sections = rec(rec(d.jobAd).sections);
-  const description = stripHtml(
-    Object.values(sections)
-      .map((s) => str(rec(s).text))
-      .filter((t) => t)
-      .join(" "),
-  ).slice(0, 5000);
+  const description = truncateText(
+    stripHtml(
+      Object.values(sections)
+        .map((s) => str(rec(s).text))
+        .filter((t) => t)
+        .join(" "),
+    ),
+    5000,
+  );
   const comp = rec(d.compensation);
   return {
     ...record,

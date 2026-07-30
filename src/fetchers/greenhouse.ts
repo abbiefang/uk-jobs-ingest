@@ -1,6 +1,6 @@
 import type { CompanyRow, Fetcher, JobRecord } from "../types";
 import { fetchJson } from "../lib/http";
-import { extractGbpRange, isUkLocation, stripHtml, ukCityOf } from "../lib/text";
+import { extractGbpRange, isUkLocation, stripHtml, truncateText, ukCityOf } from "../lib/text";
 
 type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
@@ -10,7 +10,7 @@ export function normalizeGreenhouse(raw: unknown, company: CompanyRow): JobRecor
   const j = rec(raw);
   const locationRaw = str(rec(j.location).name);
   if (!isUkLocation(locationRaw)) return null;
-  const description = stripHtml(str(j.content)).slice(0, 5000);
+  const description = truncateText(stripHtml(str(j.content)), 5000);
   const gbp = extractGbpRange(description);
   const remote = /remote/i.test(locationRaw) ? ("remote" as const) : null;
   return {

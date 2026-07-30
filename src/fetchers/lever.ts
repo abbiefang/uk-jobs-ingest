@@ -1,6 +1,6 @@
 import type { CompanyRow, Fetcher, JobRecord } from "../types";
 import { fetchJson } from "../lib/http";
-import { isUkLocation, stripHtml, ukCityOf } from "../lib/text";
+import { isUkLocation, stripHtml, truncateText, ukCityOf } from "../lib/text";
 
 type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
@@ -31,7 +31,7 @@ export function normalizeLever(raw: unknown, company: CompanyRow): JobRecord | n
     salary_max: num(salary.max),
     salary_currency: str(salary.currency) || null,
     salary_raw: null,
-    description_text: stripHtml(str(j.descriptionPlain) || str(j.description)).slice(0, 5000),
+    description_text: truncateText(stripHtml(str(j.descriptionPlain) || str(j.description)), 5000),
     apply_url: str(j.hostedUrl) || str(j.applyUrl),
     posted_at: createdAt ? new Date(createdAt).toISOString() : null,
   };

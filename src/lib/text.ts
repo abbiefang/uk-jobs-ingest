@@ -8,6 +8,17 @@ export function stripHtml(s: string): string {
   return unescapeEntities(s).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/** `String.slice` truncates by UTF-16 code unit, which can cut an astral character's surrogate
+ *  pair in half — the resulting lone high surrogate produces invalid UTF-8 once JSON-serialized
+ *  and sent over HTTP, which broke a real production write (Postgres/PostgREST rejected the
+ *  whole batch as "Empty or invalid json"). Drops a trailing unpaired high surrogate instead. */
+export function truncateText(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s;
+  const cut = s.slice(0, maxLen);
+  const lastCode = cut.charCodeAt(cut.length - 1);
+  return lastCode >= 0xd800 && lastCode <= 0xdbff ? cut.slice(0, -1) : cut;
+}
+
 /** First "£40,000 - £55,000"-style range or single figure in free text. */
 export function extractGbpRange(s: string): { min: number; max: number } | null {
   const range = s.match(/£\s?([\d,]{4,9})(?:\s?(?:-|–|to)\s?£?\s?([\d,]{4,9}))?/i);

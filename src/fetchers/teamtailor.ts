@@ -1,6 +1,6 @@
 import type { CompanyRow, Fetcher, JobRecord } from "../types";
 import { fetchJson } from "../lib/http";
-import { extractGbpRange, isUkLocation, stripHtml, ukCityOf } from "../lib/text";
+import { extractGbpRange, isUkLocation, stripHtml, truncateText, ukCityOf } from "../lib/text";
 
 type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
@@ -42,7 +42,7 @@ export function normalizeTeamtailor(raw: unknown, company: CompanyRow): JobRecor
   const jobposting = rec(item._jobposting);
   const { locationRaw, isUk } = ttLocation(jobposting);
   if (!isUk) return null;
-  const description = stripHtml(str(item.content_html)).slice(0, 5000);
+  const description = truncateText(stripHtml(str(item.content_html)), 5000);
   const structured = ttStructuredSalary(jobposting.baseSalary);
   const gbp = structured ? null : extractGbpRange(description);
   return {
