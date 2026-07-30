@@ -1,0 +1,23 @@
+name: Discover companies
+on:
+  schedule:
+    - cron: "37 5 * * 0"   # Sunday 05:37 UTC
+  workflow_dispatch:
+concurrency:
+  group: discover
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: "npm" }
+      - run: npm ci
+      - run: npm run discover
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
