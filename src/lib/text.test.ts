@@ -32,6 +32,27 @@ describe("isUkLocation", () => {
   it("rejects other cities with no UK marker", () => {
     expect(isUkLocation("Barcelona, Spain")).toBe(false);
   });
+  it("rejects New York despite the 'york' substring (word-boundary + negative marker)", () => {
+    expect(isUkLocation("New York, NY")).toBe(false);
+  });
+  it("accepts York when qualified as an explicit UK region", () => {
+    expect(isUkLocation("York, England")).toBe(true);
+  });
+  it("accepts bare York as a known UK city", () => {
+    expect(isUkLocation("York")).toBe(true);
+  });
+  it("accepts Northern Ireland", () => {
+    expect(isUkLocation("Northern Ireland")).toBe(true);
+  });
+  it("rejects Dublin, Ireland (Republic of Ireland is not the UK)", () => {
+    expect(isUkLocation("Dublin, Ireland")).toBe(false);
+  });
+  it("accepts bare London", () => {
+    expect(isUkLocation("London")).toBe(true);
+  });
+  it("accepts Londonderry as a UK city (word-boundary must not silently drop it)", () => {
+    expect(isUkLocation("Londonderry")).toBe(true);
+  });
 });
 
 describe("ukCityOf", () => {
@@ -40,5 +61,11 @@ describe("ukCityOf", () => {
   });
   it("returns null when unknown", () => {
     expect(ukCityOf("Remote (UK)")).toBeNull();
+  });
+  it("does not match 'york' inside a longer word like 'Yorkshire' (word boundary)", () => {
+    expect(ukCityOf("Yorkshire office")).toBeNull();
+  });
+  it("extracts Londonderry rather than being swallowed by the word-boundary 'london' change", () => {
+    expect(ukCityOf("Londonderry")).toBe("Londonderry");
   });
 });

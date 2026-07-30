@@ -22,7 +22,28 @@ const UK_CITIES = [
   "london","manchester","birmingham","edinburgh","glasgow","leeds","bristol",
   "cambridge","oxford","cardiff","belfast","liverpool","newcastle","sheffield",
   "nottingham","southampton","reading","brighton","milton keynes","york",
+  "londonderry","derry",
 ] as const;
+
+// Substrings that mark a location as clearly NOT the UK (e.g. "New York" contains "york"). Only
+// consulted when no explicit UK marker matched first — "northern ireland" is a UK marker above,
+// so it's never reached here even though it contains "ireland". Plain `.includes()`, not
+// word-boundary: covers the common free-text forms without the false-positive risk of a bare
+// \bus\b/\bca\b (e.g. many US state abbreviations collide with ordinary words).
+const NON_UK_MARKERS = [
+  "new york", "united states", "usa", "us,", ", us",
+  "canada", "australia", "ireland",
+  "dublin", "toronto", "vancouver", "sydney", "melbourne", "auckland",
+  "singapore", "hong kong", "india", "berlin", "paris", "amsterdam",
+  "madrid", "barcelona", "dubai",
+] as const;
+
+/** Matches `term` as a whole word (surrounded by string edges or non-letters) — a plain
+ *  `.includes()` would let "york" match inside "New York" or "london" match inside
+ *  "Londonderry". */
+function wordBoundaryRegex(term: string): RegExp {
+  return new RegExp(`(^|[^a-z])${term}($|[^a-z])`);
+}
 
 export function isUkLocation(locationRaw: string, countryCode?: string | null): boolean {
   const cc = (countryCode ?? "").trim().toLowerCase();
@@ -30,7 +51,8 @@ export function isUkLocation(locationRaw: string, countryCode?: string | null): 
   if (cc && cc !== "") return false; // explicit non-UK country wins
   const l = locationRaw.toLowerCase();
   if (/(united kingdom|\buk\b|\(uk\)|england|scotland|wales|northern ireland)/.test(l)) return true;
-  return UK_CITIES.some((c) => l.includes(c));
+  if (NON_UK_MARKERS.some((m) => l.includes(m))) return false;
+  return UK_CITIES.some((c) => wordBoundaryRegex(c).test(l));
 }
 
 export function ukCityOf(locationRaw: string): string | null {
@@ -38,9 +60,9 @@ export function ukCityOf(locationRaw: string): string | null {
   let earliestCity: string | null = null;
   let earliestIndex = Infinity;
   for (const c of UK_CITIES) {
-    const idx = l.indexOf(c);
-    if (idx >= 0 && idx < earliestIndex) {
-      earliestIndex = idx;
+    const match = wordBoundaryRegex(c).exec(l);
+    if (match && match.index < earliestIndex) {
+      earliestIndex = match.index;
       earliestCity = c;
     }
   }

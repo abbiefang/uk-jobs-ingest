@@ -17,7 +17,10 @@ export function normalizeAshby(raw: unknown, company: CompanyRow): JobRecord | n
     ...secondaryLocs.map((l) => str(rec(l).location)),
   ].filter((s) => s);
   const joinedLocations = allLocations.join(" ");
-  if (!isUkLocation(joinedLocations)) return null;
+  // Checked per-location, not on the joined string: isUkLocation's non-UK negative markers
+  // (e.g. "barcelona", "paris") would otherwise veto a genuinely UK secondary location just
+  // because an unrelated non-UK office name also appears somewhere in the joined text.
+  if (!allLocations.some((loc) => isUkLocation(loc))) return null;
   const description = stripHtml(str(j.descriptionHtml)).slice(0, 5000);
   const compensation = rec(j.compensation);
   const compensationSummary = str(compensation.compensationTierSummary);
