@@ -13,11 +13,11 @@ const raw = {
   published_on: "2026-07-28",
   employment_type: "Full-time",
   telecommuting: true,
-  description: "<p>Regulated products role.</p>",
+  description: "<p>Regulated products role. £60,000 - £75,000.</p>",
 };
 
 describe("normalizeWorkable", () => {
-  it("maps a UK job with telecommuting → hybrid remote_type", () => {
+  it("maps a UK job with telecommuting → hybrid remote_type and salary from description", () => {
     const j = normalizeWorkable(raw, company);
     expect(j).toMatchObject({
       ats: "workable",
@@ -29,9 +29,9 @@ describe("normalizeWorkable", () => {
       posted_at: "2026-07-28T00:00:00.000Z",
       remote_type: "hybrid",
       apply_url: "https://apply.workable.com/j/AB12CD/apply",
-      salary_min: null,
-      salary_max: null,
-      salary_currency: null,
+      salary_min: 60000,
+      salary_max: 75000,
+      salary_currency: "GBP",
     });
     expect(j!.description_text).toContain("Regulated products role");
   });

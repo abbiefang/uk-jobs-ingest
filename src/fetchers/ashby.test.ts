@@ -53,16 +53,16 @@ describe("normalizeAshby", () => {
     expect(j?.apply_url).toBe("https://jobs.ashbyhq.com/synthesia/uuid-1");
   });
 
-  it("respects secondaryLocations for UK check", () => {
+  it("respects secondaryLocations for UK check (non-UK primary + UK secondary)", () => {
     const j = normalizeAshby(
       {
         ...raw,
-        location: "Manchester",
-        secondaryLocations: [{ location: "Liverpool" }, { location: "London" }],
+        location: "Barcelona",
+        secondaryLocations: [{ location: "Paris" }, { location: "London" }],
       },
       company
     );
     expect(j).not.toBeNull();
-    expect(j?.city).toMatch(/^(Manchester|Liverpool|London)$/);
+    expect(j?.city).toBe("London");
   });
 });
