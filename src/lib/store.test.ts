@@ -72,9 +72,7 @@ describe("splitUpsertRows", () => {
     last_seen_at: "2026-07-30T00:00:00.000Z",
     is_active: true,
   };
-  const STRIPPED_KEYS = ["description_text", "salary_min", "salary_max", "salary_currency", "salary_raw", "apply_url"];
-
-  it("strips description_text, salary fields, and apply_url from touch rows only", () => {
+  it("splits full vs touch rows by description_text, reducing touch rows to identity keys only", () => {
     const fullRow = {
       ...base, external_id: "1", description_text: "A real description",
       salary_min: 50000, salary_max: 60000, apply_url: "https://jobs.example.com/postings/1",
@@ -87,9 +85,7 @@ describe("splitUpsertRows", () => {
     const { full, touch } = splitUpsertRows([fullRow, touchRow]);
 
     expect(full).toEqual([fullRow]);
-    expect(touch).toHaveLength(1);
-    for (const key of STRIPPED_KEYS) expect(touch[0]).not.toHaveProperty(key);
-    expect(touch[0]).toMatchObject({ external_id: "2", ats: "smartrecruiters", company_slug: "acme" });
+    expect(touch).toEqual([{ ats: "smartrecruiters", company_slug: "acme", external_id: "2" }]);
   });
 
   it("keeps each output batch internally uniform in its key set", () => {
@@ -105,6 +101,7 @@ describe("splitUpsertRows", () => {
     expect(touch).toHaveLength(2);
     expect(keysOf(full[0])).toEqual(keysOf(full[1]));
     expect(keysOf(touch[0])).toEqual(keysOf(touch[1]));
+    expect(keysOf(touch[0])).toEqual(["ats", "company_slug", "external_id"]);
   });
 
   it("returns empty arrays for empty input", () => {

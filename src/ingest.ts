@@ -95,27 +95,38 @@ async function processAtsGroup(ats: string, companies: CompanyRow[]): Promise<At
     }
   }
 
-  // Upserts one company's already-deduped jobs in chunks of 500, splitting each chunk into up
-  // to two requests via splitUpsertRows — PostgREST requires uniform columns per request body,
-  // and a "touch" row (SmartRecruiters known-job sentinel) omits different keys than a full row.
-  async function upsertJobs(jobs: JobRecord[]): Promise<number> {
+  // Upserts one company's already-deduped jobs in chunks of 500. splitUpsertRows separates
+  // "full" rows (POSTed via ON CONFLICT DO UPDATE) from "touch" rows (SmartRecruiters known-job
+  // sentinel, description_text === "") — touch rows carry no real salary/apply_url, and
+  // Postgres validates NOT NULL on the proposed insert row before it even evaluates the
+  // conflict, so they must never go through the upsert path. Touch rows are instead refreshed
+  // with a PATCH by identity (ats, company_slug, external_id in.(...)), chunked to keep the
+  // URL's in.(...) list bounded.
+  async function upsertJobs(company: CompanyRow, jobs: JobRecord[]): Promise<number> {
     let upserted = 0;
     for (const group of chunk(jobs, 500)) {
+      const now = new Date().toISOString();
       const rows = group.map((job) => ({
         ...job,
         sponsor_norm: normalizeCompany(job.company_name),
-        last_seen_at: new Date().toISOString(),
+        last_seen_at: now,
         is_active: true,
       }));
       const { full, touch } = splitUpsertRows(rows);
-      for (const batch of [full, touch]) {
-        if (batch.length === 0) continue;
+      if (full.length > 0) {
         const ok = await write("ingested_jobs?on_conflict=ats,external_id", {
           method: "POST",
           prefer: "resolution=merge-duplicates",
-          body: JSON.stringify(batch),
+          body: JSON.stringify(full),
         });
-        if (ok) upserted += batch.length;
+        if (ok) upserted += full.length;
+      }
+      for (const idChunk of chunk(touch.map((t) => encodeURIComponent(String(t.external_id))), 100)) {
+        const ok = await write(
+          `ingested_jobs?ats=eq.${encodeURIComponent(ats)}&company_slug=eq.${encodeURIComponent(company.slug)}&external_id=in.(${idChunk.join(",")})`,
+          { method: "PATCH", body: JSON.stringify({ last_seen_at: now, is_active: true }) },
+        );
+        if (ok) upserted += idChunk.length;
       }
     }
     return upserted;
@@ -177,7 +188,7 @@ async function processAtsGroup(ats: string, companies: CompanyRow[]): Promise<At
       // fetcher returning the same posting twice (SmartRecruiters' offset paging can overlap)
       // would otherwise make PostgREST reject the whole upsert batch.
       const jobs = dedupeByExternalId(outcome.jobs);
-      jobsUpserted += await upsertJobs(jobs);
+      jobsUpserted += await upsertJobs(company, jobs);
 
       const idsToDeactivate = planDeactivations(existing, new Set(jobs.map((j) => j.external_id)));
       for (const idChunk of chunk(idsToDeactivate, 100)) {

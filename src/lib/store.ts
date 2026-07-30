@@ -30,24 +30,16 @@ export function dedupeByExternalId<T extends { external_id: string }>(rows: T[])
   return [...byId.values()];
 }
 
-const TOUCH_STRIPPED_KEYS = [
-  "description_text",
-  "salary_min",
-  "salary_max",
-  "salary_currency",
-  "salary_raw",
-  "apply_url",
-] as const;
-
-/** Splits already-built upsert rows into "full" (send every field) vs "touch" rows, and strips
- *  the touch rows down to a pure still-alive ping. A row is "touch" when description_text ===
- *  "" — the SmartRecruiters known-job short-circuit sentinel — which means the listing call
- *  that produced it carries no salary and only a constructed (non-canonical) apply_url, not
- *  the real ones already stored from the original detail-call upsert. Sending those synthetic
- *  values would make merge-duplicates overwrite genuine stored salary/apply_url with nulls or
- *  a reconstructed guess on every later run, so the keys are deleted entirely and the merge
- *  leaves the stored values untouched. Returned as two arrays because a single PostgREST
- *  request body requires uniform columns across all its rows. */
+/** Splits already-built upsert rows into "full" (send every field, POST upsert) vs "touch"
+ *  rows. A row is "touch" when description_text === "" — the SmartRecruiters known-job
+ *  short-circuit sentinel — which means the listing call that produced it carries no salary
+ *  and only a constructed (non-canonical) apply_url, not the real ones already stored from the
+ *  original detail-call upsert. Those synthetic values must never reach an
+ *  INSERT ... ON CONFLICT DO UPDATE: Postgres validates NOT NULL columns (apply_url,
+ *  description_text) on the *proposed insert row* before it even evaluates the conflict, so a
+ *  touch row would 400 the whole batch regardless of the row already existing. The caller
+ *  (ingest.ts) instead refreshes touch rows with a plain PATCH by identity, so touch entries
+ *  here carry only the identity keys that PATCH needs. */
 export function splitUpsertRows(
   rows: Record<string, unknown>[],
 ): { full: Record<string, unknown>[]; touch: Record<string, unknown>[] } {
@@ -55,9 +47,7 @@ export function splitUpsertRows(
   const touch: Record<string, unknown>[] = [];
   for (const row of rows) {
     if (row.description_text === "") {
-      const stripped = { ...row };
-      for (const key of TOUCH_STRIPPED_KEYS) delete stripped[key];
-      touch.push(stripped);
+      touch.push({ ats: row.ats, company_slug: row.company_slug, external_id: row.external_id });
     } else {
       full.push(row);
     }
