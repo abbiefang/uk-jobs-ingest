@@ -199,16 +199,31 @@ async function upsertCompanies(rows: Record<string, unknown>[]): Promise<number>
   return upserted;
 }
 
-async function buildDirectorySeed(registerMap: Map<string, string>): Promise<{ scanned: number; upserted: number }> {
+async function buildDirectorySeed(
+  registerMap: Map<string, string>,
+): Promise<{ scanned: number; upserted: number; filesSkipped: number }> {
   const files = await fetchAtsCompaniesDirectory();
   const alwaysInclude = await loadAlwaysIncludeKeys();
 
   let scanned = 0;
   let upserted = 0;
+  let filesSkipped = 0;
   for (const file of files) {
-    const csvRes = await fetch(file.download_url, { signal: AbortSignal.timeout(30_000) });
-    if (!csvRes.ok) continue; // one bad file in the directory shouldn't kill the whole seed step
-    const rows = parseAtsCompaniesCsv(await csvRes.text());
+    // One bad file in the directory shouldn't kill the whole seed step — a non-ok status and a
+    // thrown network/timeout error both just skip this file and move on to the next.
+    let csvText: string;
+    try {
+      const csvRes = await fetch(file.download_url, { signal: AbortSignal.timeout(30_000) });
+      if (!csvRes.ok) {
+        filesSkipped++;
+        continue;
+      }
+      csvText = await csvRes.text();
+    } catch {
+      filesSkipped++;
+      continue;
+    }
+    const rows = parseAtsCompaniesCsv(csvText);
     scanned += rows.length;
 
     const toUpsert: Record<string, unknown>[] = [];
@@ -227,7 +242,7 @@ async function buildDirectorySeed(registerMap: Map<string, string>): Promise<{ s
     }
     upserted += await upsertCompanies(toUpsert);
   }
-  return { scanned, upserted };
+  return { scanned, upserted, filesSkipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -255,44 +270,70 @@ async function fetchExistingCompanyIdentity(): Promise<{ pairs: Set<string>; nam
   return { pairs, names };
 }
 
-async function readCursor(): Promise<number> {
+async function readCursor(): Promise<string> {
   const res = await sb("ingest_state?key=eq.discover_cursor&select=value");
   if (Array.isArray(res.body) && res.body.length > 0) {
-    const offset = (res.body[0] as { value?: { offset?: unknown } })?.value?.offset;
-    if (typeof offset === "number" && Number.isFinite(offset) && offset >= 0) return offset;
+    const after = (res.body[0] as { value?: { after?: unknown } })?.value?.after;
+    if (typeof after === "string") return after;
   }
-  return 0;
+  return "";
 }
 
-async function writeCursor(offset: number): Promise<void> {
+async function writeCursor(after: string): Promise<void> {
   await sb("ingest_state?on_conflict=key", {
     method: "POST",
     prefer: "resolution=merge-duplicates",
-    body: JSON.stringify([{ key: "discover_cursor", value: { offset } }]),
+    body: JSON.stringify([{ key: "discover_cursor", value: { after } }]),
   });
 }
 
-/** Alphabetical-by-normalized-name window of `size` register entries not already covered by an
- *  existing ingest_companies row (by name match), starting at `offset` and wrapping around the
- *  candidate list rather than the full register — so the cursor always lands on a real,
- *  not-yet-covered candidate next run instead of drifting into already-covered territory. */
-function selectProbeBatch(
-  registerMap: Map<string, string>,
-  existingNames: Set<string>,
-  cursorOffset: number,
+/**
+ * Alphabetical-by-normalized-name window of `size` register names not in `covered`, anchored to
+ * the CONTENT of the last-processed name (`after`) rather than a numeric index.
+ *
+ * A numeric offset drifts: the candidate list is `registerNames` minus whatever's already
+ * covered, and covered grows every run (probe hits, directory-seed upserts) — so the SAME
+ * offset means a different position in a SHORTER list next time, silently skipping whatever
+ * fell in the gap. Anchoring to "the last name processed, alphabetically" instead means next
+ * run just asks for "names greater than that" against however long the list is now — content
+ * doesn't move, so nothing is skipped, no matter how much the covered set has shrunk the list
+ * in between (concretely: budget 4 over [a..j], hits on b/d shrinking the list to 8 — the old
+ * numeric offset reused as-is against the shorter list jumped straight to [g,h,i,j], silently
+ * skipping e/f; anchoring on content instead continues from right after "d" with [e,f,g,h]).
+ *
+ * Pass 1 takes names > `after` in order; pass 2 wraps to the start of the (deduped, sorted)
+ * candidate list for any remaining budget — covers both "near the end" and "after is stale/
+ * beyond the last name" (nothing > after at all, so pass 1 is empty and pass 2 fills the whole
+ * batch from the start, exactly the desired wrap-to-beginning behavior).
+ */
+export function selectProbeBatch(
+  registerNames: string[],
+  covered: Set<string>,
+  after: string,
   size: number,
-): { batch: { normalized: string; name: string }[]; nextOffset: number } {
-  const candidates = [...registerMap.entries()]
-    .filter(([norm]) => !existingNames.has(norm))
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([normalized, name]) => ({ normalized, name }));
+): { batch: string[]; nextAfter: string } {
+  const candidates = [...new Set(registerNames)].filter((n) => !covered.has(n)).sort();
+  if (candidates.length === 0 || size <= 0) return { batch: [], nextAfter: after };
 
-  if (candidates.length === 0) return { batch: [], nextOffset: 0 };
+  const batch: string[] = [];
+  const taken = new Set<string>();
+  for (const n of candidates) {
+    if (batch.length >= size) break;
+    if (n > after) {
+      batch.push(n);
+      taken.add(n);
+    }
+  }
+  if (batch.length < size) {
+    for (const n of candidates) {
+      if (batch.length >= size) break;
+      if (taken.has(n)) continue;
+      batch.push(n);
+      taken.add(n);
+    }
+  }
 
-  const start = cursorOffset % candidates.length;
-  const n = Math.min(size, candidates.length);
-  const batch = Array.from({ length: n }, (_, i) => candidates[(start + i) % candidates.length]);
-  return { batch, nextOffset: (start + n) % candidates.length };
+  return { batch, nextAfter: batch.length > 0 ? batch[batch.length - 1] : after };
 }
 
 const PROBE_HOSTS: { ats: Exclude<Ats, "teamtailor">; probe: (slug: string, limiter: () => Promise<void>) => Promise<boolean> }[] = [
@@ -381,13 +422,19 @@ async function runProbeBudget(
   existingNames: Set<string>,
   existingPairs: Set<string>,
 ): Promise<{ attempted: number; hits: number }> {
-  const cursorOffset = await readCursor();
-  const { batch, nextOffset } = selectProbeBatch(registerMap, existingNames, cursorOffset, PROBE_BUDGET);
+  const after = await readCursor();
+  const { batch: normalizedBatch, nextAfter } = selectProbeBatch(
+    [...registerMap.keys()],
+    existingNames,
+    after,
+    PROBE_BUDGET,
+  );
   const limiters = makeProbeLimiters();
 
   let hits = 0;
   const toUpsert: Record<string, unknown>[] = [];
-  for (const { name } of batch) {
+  for (const normalized of normalizedBatch) {
+    const name = registerMap.get(normalized)!;
     const result = await probeCompanyName(name, limiters);
     if (!result) continue;
     const key = `${result.ats}::${result.slug}`;
@@ -406,8 +453,8 @@ async function runProbeBudget(
   }
 
   await upsertCompanies(toUpsert);
-  await writeCursor(nextOffset);
-  return { attempted: batch.length, hits };
+  await writeCursor(nextAfter);
+  return { attempted: normalizedBatch.length, hits };
 }
 
 // ---------------------------------------------------------------------------
@@ -515,10 +562,12 @@ async function main() {
 
   let directoryScanned: number;
   let directoryUpserted: number;
+  let directoryFilesSkipped: number;
   try {
     const result = await buildDirectorySeed(registerMap);
     directoryScanned = result.scanned;
     directoryUpserted = result.upserted;
+    directoryFilesSkipped = result.filesSkipped;
   } catch (err) {
     const reason = err instanceof DirectoryFetchError ? err.reason : "unknown";
     console.log(JSON.stringify({ error: "directory_seed_failed", reason }));
@@ -551,6 +600,7 @@ async function main() {
     skilledWorkerRows,
     directoryCsvRowsScanned: directoryScanned,
     directoryHitsUpserted: directoryUpserted,
+    directoryFilesSkipped,
     probesAttempted: probeStats.attempted,
     probeHits: probeStats.hits,
     deadsMarked: deadStats.marked,
@@ -558,4 +608,9 @@ async function main() {
   }));
 }
 
-main();
+// Guards main() from firing on import — src/discover.test.ts imports selectProbeBatch (and other
+// pure helpers) from this module for unit testing, which would otherwise run the whole script
+// (including requireEnv()'s process.exit(1) on missing env) as a side effect of import.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main();
+}
